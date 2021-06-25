@@ -47,6 +47,37 @@ static void Add3GammaCurves(cmsPipeline* lut, cmsFloat64Number Curve)
     cmsFreeToneCurve(id);
 }
 
+static void Add3ShaperCurves(cmsPipeline* lut, OCIO::ConstCPUProcessorRcPtr & shaperProcessor, int shapersize)
+{
+	cmsUInt16Number values[3][shapersize];
+
+	for(int i = 0; i < shapersize; ++i)
+	{
+		float f = float(i) / float(shapersize-1);
+		float pix[3] = {f,f,f};
+		shaperProcessor->applyRGB(pix);
+
+		for( int c = 0; c < 3; ++c )
+    	{
+			values[c][i] = (cmsUInt16Number)std::max(std::min(pix[c] * 65535.f, 65535.f), 0.f);
+    	}
+	}
+
+    cmsToneCurve* id3[3];
+
+    for(int c = 0; c < 3; ++c)
+    {
+    	id3[c] = cmsBuildTabulatedToneCurve16(NULL, shapersize, values[c]);
+    }
+
+    cmsPipelineInsertStage(lut, cmsAT_END, cmsStageAllocToneCurves(NULL, 3, id3));
+
+    for(int c = 0; c < 3; ++c)
+    {
+    	cmsFreeToneCurve(id3[c]);
+    }
+}
+
 static void AddIdentityMatrix(cmsPipeline* lut)
 {
     const cmsFloat64Number Identity[] = {
@@ -84,7 +115,9 @@ static cmsInt32Number PCS2Display_Sampler16(const cmsUInt16Number in[], cmsUInt1
 
 
 void SaveICCProfileToFile(const std::string & outputfile,
-                          ConstCPUProcessorRcPtr & processor,
+                          ConstCPUProcessorRcPtr & shaperProcessor,
+                          int shapersize,
+                          ConstCPUProcessorRcPtr & cubeProcessor,
                           int cubesize,
                           int whitepointtemp,
                           const std::string & displayicc,
@@ -155,7 +188,14 @@ void SaveICCProfileToFile(const std::string & outputfile,
         std::cout << "[OpenColorIO INFO]: Adding AToB0Tag\n";
     cmsPipeline* AToB0Tag = cmsPipelineAlloc(NULL, 3, 3);
 
-    Add3GammaCurves(AToB0Tag, 1.f); // cmsSigCurveSetElemType
+    if(shaperProcessor)
+    {
+        Add3ShaperCurves(AToB0Tag, shaperProcessor, shapersize);
+    }
+    else
+    {
+        Add3GammaCurves(AToB0Tag, 1.f); // cmsSigCurveSetElemType
+    }
 
     // cmsSigCLutElemType
     cmsStage* AToB0Clut = cmsStageAllocCLut16bit(NULL, cubesize, 3, 3, NULL);

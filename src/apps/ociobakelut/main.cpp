@@ -291,27 +291,52 @@ int main (int argc, const char* argv[])
                 return 1;
             }
 
+            if(shapersize<2) shapersize = 256; // default
             if(cubesize<2) cubesize = 32; // default
 
-            OCIO::ConstCPUProcessorRcPtr processor;
+            OCIO::ConstCPUProcessorRcPtr shaperProcessor;
+            if (!shaperspace.empty() && shaperspace != inputspace)
+            {
+                shaperProcessor = config->getProcessor(inputspace.c_str(),
+                    shaperspace.c_str())->getDefaultCPUProcessor();
+
+                if( shaperProcessor->hasChannelCrosstalk() )
+                {
+                    std::ostringstream os;
+                    os << "The specified shaperSpace, '";
+                    os << shaperspace << "' has channel crosstalk, which is not appropriate for shapers. ";
+                    os << "Please select an alternate shaper space or omit this option.";
+                    throw Exception(os.str().c_str());
+                }
+            }
+
+            std::string cubeInputspace = inputspace;
+            if(shaperProcessor)
+            {
+            	cubeInputspace = shaperspace;
+            }
+
+            OCIO::ConstCPUProcessorRcPtr cubeProcessor;
             if (!looks.empty())
             {
                 OCIO::LookTransformRcPtr transform =
                     OCIO::LookTransform::Create();
                 transform->setLooks(looks.c_str());
-                transform->setSrc(inputspace.c_str());
+                transform->setSrc(cubeInputspace.c_str());
                 transform->setDst(outputspace.c_str());
-                processor = config->getProcessor(transform,
+                cubeProcessor = config->getProcessor(transform,
                     OCIO::TRANSFORM_DIR_FORWARD)->getDefaultCPUProcessor();
             }
             else
             {
-                processor = config->getProcessor(inputspace.c_str(),
+                cubeProcessor = config->getProcessor(cubeInputspace.c_str(),
                     outputspace.c_str())->getDefaultCPUProcessor();
             }
 
             SaveICCProfileToFile(outputfile,
-                                 processor,
+                                 shaperProcessor,
+                                 shapersize,
+                                 cubeProcessor,
                                  cubesize,
                                  whitepointtemp,
                                  displayicc,
