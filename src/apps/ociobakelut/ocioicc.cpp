@@ -49,7 +49,9 @@ static void Add3GammaCurves(cmsPipeline* lut, cmsFloat64Number Curve)
 
 static void Add3ShaperCurves(cmsPipeline* lut, OCIO::ConstCPUProcessorRcPtr & shaperProcessor, int shapersize)
 {
-    cmsUInt16Number values[3][shapersize];
+    std::vector<cmsUInt16Number> valuesR(shapersize, 0);
+    std::vector<cmsUInt16Number> valuesG(shapersize, 0);
+    std::vector<cmsUInt16Number> valuesB(shapersize, 0);
 
     for(int i = 0; i < shapersize; ++i)
     {
@@ -57,18 +59,16 @@ static void Add3ShaperCurves(cmsPipeline* lut, OCIO::ConstCPUProcessorRcPtr & sh
         float pix[3] = {f,f,f};
         shaperProcessor->applyRGB(pix);
 
-        for( int c = 0; c < 3; ++c )
-        {
-            values[c][i] = (cmsUInt16Number)std::max(std::min(pix[c] * 65535.f, 65535.f), 0.f);
-        }
+        valuesR[i] = (cmsUInt16Number)std::max(std::min(pix[0] * 65535.f, 65535.f), 0.f);
+        valuesG[i] = (cmsUInt16Number)std::max(std::min(pix[1] * 65535.f, 65535.f), 0.f);
+        valuesB[i] = (cmsUInt16Number)std::max(std::min(pix[2] * 65535.f, 65535.f), 0.f);
     }
 
     cmsToneCurve* id3[3];
 
-    for(int c = 0; c < 3; ++c)
-    {
-        id3[c] = cmsBuildTabulatedToneCurve16(NULL, shapersize, values[c]);
-    }
+    id3[0] = cmsBuildTabulatedToneCurve16(NULL, shapersize, valuesR.data());
+    id3[1] = cmsBuildTabulatedToneCurve16(NULL, shapersize, valuesG.data());
+    id3[2] = cmsBuildTabulatedToneCurve16(NULL, shapersize, valuesB.data());
 
     cmsPipelineInsertStage(lut, cmsAT_END, cmsStageAllocToneCurves(NULL, 3, id3));
 
@@ -166,7 +166,7 @@ void SaveICCProfileToFile(const std::string & outputfile,
 
     //
     SamplerData data;
-    data.processor = processor;
+    data.processor = cubeProcessor;
 
     // 16Bit
     data.to_PCS16 = cmsCreateTransform(DisplayProfile, TYPE_RGB_16, labProfile, TYPE_LabV2_16,

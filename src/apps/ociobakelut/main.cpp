@@ -306,7 +306,7 @@ int main (int argc, const char* argv[])
                     os << "The specified shaperSpace, '";
                     os << shaperspace << "' has channel crosstalk, which is not appropriate for shapers. ";
                     os << "Please select an alternate shaper space or omit this option.";
-                    throw Exception(os.str().c_str());
+                    throw OCIO::Exception(os.str().c_str());
                 }
             }
 
