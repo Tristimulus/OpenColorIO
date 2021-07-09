@@ -28,7 +28,7 @@ static int parse_end_args(int argc, const char *argv[])
     return 0;
 }
 
-OCIO::GroupTransformRcPtr parse_luts(int argc, const char *argv[]);
+void parse_luts(int argc, const char* argv[], OCIO::GroupTransformRcPtr& groupTransform, OCIO::TransformRcPtr& shaperTransform);
 
 int main (int argc, const char* argv[])
 {
@@ -92,6 +92,9 @@ int main (int argc, const char* argv[])
                "--offset10 %f %f %f", &dummyf1, &dummyf2, &dummyf3, "offset (10-bit)",
                "--power %f %f %f", &dummyf1, &dummyf2, &dummyf3, "power",
                "--sat %f", &dummyf1, "saturation (ASC-CDL luma coefficients)\n",
+               "<SEPARATOR>", "    (one of the following can be optionally specified to apply a shaper )",
+               "--shaperlut %s", &dummystr, "Specift a LUT (forward direction) to use for the shaper",
+               "--invshaperlut %s", &dummystr, "Specift a LUT (inverse direction) to use for the shaper",
                "<SEPARATOR>", "Baking Options",
                "--format %s", &format, formatstr.c_str(),
                "--shapersize %d", &shapersize, "size of the shaper (default: format specific)",
@@ -133,10 +136,11 @@ int main (int argc, const char* argv[])
     OCIO::ConstConfigRcPtr config;
 
     OCIO::GroupTransformRcPtr groupTransform;
+    OCIO::TransformRcPtr shaperTransform;
 
     try
     {
-        groupTransform = parse_luts(argc, argv);
+        parse_luts(argc, argv, groupTransform, shaperTransform);
     }
     catch(const OCIO::Exception & e)
     {
@@ -183,7 +187,7 @@ int main (int argc, const char* argv[])
         if(!shaperspace.empty())
         {
             std::cerr << "\nERROR: --shaperspace is not allowed when using --lut\n\n";
-            std::cerr << "See --help for more info." << std::endl;
+            std::cerr << "Try --shaperlut or See --help for more info." << std::endl;
             return 1;
         }
 
@@ -193,6 +197,25 @@ int main (int argc, const char* argv[])
         inputspace = "RawInput";
         inputColorSpace->setName(inputspace.c_str());
         editableConfig->addColorSpace(inputColorSpace);
+
+        OCIO::ColorSpaceRcPtr shaperColorSpace = OCIO::ColorSpace::Create();
+        shaperspace = "ShaperColorSpace";
+        shaperColorSpace->setName(shaperspace.c_str());
+
+        if (shaperTransform)
+        {
+            shaperColorSpace->setTransform(shaperTransform,
+                OCIO::COLORSPACE_DIR_FROM_REFERENCE);
+
+            if (verbose)
+            {
+                std::cout << "[OpenColorIO DEBUG]: Shaper Transform:";
+                std::cout << *shaperTransform;
+                std::cout << "\n";
+            }
+        }
+
+        editableConfig->addColorSpace(shaperColorSpace);
 
         OCIO::ColorSpaceRcPtr outputColorSpace = OCIO::ColorSpace::Create();
         outputspace = "ProcessedOutput";
@@ -257,6 +280,13 @@ int main (int argc, const char* argv[])
             ap.usage ();
             return 1;
         }
+        if (!shaperspace.empty() && shaperspace != inputspace)
+        {
+            OCIO::ColorSpaceTransformRcPtr t = OCIO::ColorSpaceTransform::Create();
+            t->setSrc(inputspace.c_str());
+            t->setDst(shaperspace.c_str());
+            shaperTransform = std::static_pointer_cast<OCIO::Transform>(t);
+        }
     }
 
     if(outputfile.empty() && !usestdout)
@@ -295,16 +325,14 @@ int main (int argc, const char* argv[])
             if(cubesize<2) cubesize = 32; // default
 
             OCIO::ConstCPUProcessorRcPtr shaperProcessor;
-            if (!shaperspace.empty() && shaperspace != inputspace)
+            if (shaperTransform)
             {
-                shaperProcessor = config->getProcessor(inputspace.c_str(),
-                    shaperspace.c_str())->getDefaultCPUProcessor();
+                shaperProcessor = config->getProcessor(shaperTransform)->getDefaultCPUProcessor();
 
                 if( shaperProcessor->hasChannelCrosstalk() )
                 {
                     std::ostringstream os;
-                    os << "The specified shaperSpace, '";
-                    os << shaperspace << "' has channel crosstalk, which is not appropriate for shapers. ";
+                    os << "The specified shaper has channel crosstalk, which is not appropriate for shapers. ";
                     os << "Please select an alternate shaper space or omit this option.";
                     throw OCIO::Exception(os.str().c_str());
                 }
@@ -313,7 +341,8 @@ int main (int argc, const char* argv[])
             std::string cubeInputspace = inputspace;
             if(shaperProcessor)
             {
-            	cubeInputspace = shaperspace;
+                //TODO: this will be wrong with --shaperlut!
+                cubeInputspace = shaperspace;
             }
 
             OCIO::ConstCPUProcessorRcPtr cubeProcessor;
@@ -417,9 +446,8 @@ int main (int argc, const char* argv[])
 // then atof() will likely try to convert "--invlut" to its double equivalent,
 // resulting in an invalid (or at least undesired) scale value.
 
-OCIO::GroupTransformRcPtr parse_luts(int argc, const char *argv[])
+void parse_luts(int argc, const char *argv[], OCIO::GroupTransformRcPtr& groupTransform, OCIO::TransformRcPtr& shaperTransform)
 {
-    OCIO::GroupTransformRcPtr groupTransform = OCIO::GroupTransform::Create();
     const char *lastCCCId = NULL; // Ugly to use this but using GroupTransform::getTransform()
                                   // returns a const object so we must set this
                                   // prior to using --lut for now.
@@ -467,8 +495,57 @@ OCIO::GroupTransformRcPtr parse_luts(int argc, const char *argv[])
             OCIO::FileTransformRcPtr t = OCIO::FileTransform::Create();
             t->setSrc(argv[i+1]);
             t->setInterpolation(OCIO::INTERP_BEST);
+            if (lastCCCId)
+            {
+                t->setCCCId(lastCCCId);
+            }
             t->setDirection(OCIO::TRANSFORM_DIR_INVERSE);
             groupTransform->appendTransform(t);
+
+            i += 1;
+        }
+        else if(arg == "--shaperlut" || arg == "-shaperlut")
+        {
+            if(i+1>=argc)
+            {
+                throw OCIO::Exception("Error parsing --shaperlut. Invalid num args");
+            }
+
+            if (shaperTransform){
+                throw OCIO::Exception("Error parsing --shaperlut. Too many shapers specified");
+            }
+
+            OCIO::FileTransformRcPtr t = OCIO::FileTransform::Create();
+            t->setSrc(argv[i+1]);
+            t->setInterpolation(OCIO::INTERP_BEST);
+            if (lastCCCId)
+            {
+                t->setCCCId(lastCCCId);
+            }
+            shaperTransform = std::static_pointer_cast<OCIO::Transform>(t);
+
+            i += 1;
+        }
+        else if(arg == "--invshaperlut" || arg == "-invshaperlut")
+        {
+            if(i+1>=argc)
+            {
+                throw OCIO::Exception("Error parsing --invshaperlut. Invalid num args");
+            }
+
+            if (shaperTransform){
+                throw OCIO::Exception("Error parsing --invshaperlut. Too many shapers specified");
+            }
+
+            OCIO::FileTransformRcPtr t = OCIO::FileTransform::Create();
+            t->setSrc(argv[i+1]);
+            t->setInterpolation(OCIO::INTERP_BEST);
+            if (lastCCCId)
+            {
+                t->setCCCId(lastCCCId);
+            }
+            t->setDirection(OCIO::TRANSFORM_DIR_INVERSE);
+            shaperTransform = std::static_pointer_cast<OCIO::Transform>(t);
 
             i += 1;
         }
@@ -557,7 +634,5 @@ OCIO::GroupTransformRcPtr parse_luts(int argc, const char *argv[])
             i += 1;
         }
     }
-
-    return groupTransform;
 }
 
